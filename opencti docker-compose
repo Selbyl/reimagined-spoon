@@ -67,7 +67,7 @@ services:
       - RABBITMQ__MANAGEMENT_SSL=false
       - RABBITMQ__USERNAME=${RABBITMQ_DEFAULT_USER}
       - RABBITMQ__PASSWORD=${RABBITMQ_DEFAULT_PASS}
-      - SMTP__HOSTNAME=${SMTP_HOSTNAME}
+      - SMTP__HOSTNAME=127.0.0.1
       - SMTP__PORT=25
       - PROVIDERS__LOCAL__STRATEGY=LocalStrategy
     ports:
@@ -95,7 +95,7 @@ services:
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=${CONNECTOR_HISTORY_ID} # Valid UUIDv4
+      - CONNECTOR_ID=4d10eff8-f165-4a1f-ad78-dce303149370 # Valid UUIDv4
       - CONNECTOR_TYPE=STREAM
       - CONNECTOR_NAME=History
       - CONNECTOR_SCOPE=history
@@ -109,7 +109,7 @@ services:
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=${CONNECTOR_EXPORT_FILE_STIX_ID} # Valid UUIDv4
+      - CONNECTOR_ID=55cdf543-afb6-4ddd-bcdb-78722e2ce825 # Valid UUIDv4
       - CONNECTOR_TYPE=INTERNAL_EXPORT_FILE
       - CONNECTOR_NAME=ExportFileStix2
       - CONNECTOR_SCOPE=application/json
@@ -123,7 +123,7 @@ services:
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=${CONNECTOR_EXPORT_FILE_CSV_ID} # Valid UUIDv4
+      - CONNECTOR_ID=05c3cb00-59dd-4ea7-89e3-96b110f42843 # Valid UUIDv4
       - CONNECTOR_TYPE=INTERNAL_EXPORT_FILE
       - CONNECTOR_NAME=ExportFileCsv
       - CONNECTOR_SCOPE=text/csv
@@ -137,7 +137,7 @@ services:
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=${CONNECTOR_EXPORT_FILE_TXT_ID} # Valid UUIDv4
+      - CONNECTOR_ID=22f30ca7-5fbb-4c48-875d-3521dbfa45fb # Valid UUIDv4
       - CONNECTOR_TYPE=INTERNAL_EXPORT_FILE
       - CONNECTOR_NAME=ExportFileTxt
       - CONNECTOR_SCOPE=text/plain
@@ -151,7 +151,7 @@ services:
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=${CONNECTOR_IMPORT_FILE_STIX_ID} # Valid UUIDv4
+      - CONNECTOR_ID=ddf26f86-a7e3-4b54-9ad4-486bca191f33 # Valid UUIDv4
       - CONNECTOR_TYPE=INTERNAL_IMPORT_FILE
       - CONNECTOR_NAME=ImportFileStix
       - CONNECTOR_VALIDATE_BEFORE_IMPORT=true # Validate any bundle before import
@@ -167,7 +167,7 @@ services:
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=${CONNECTOR_IMPORT_DOCUMENT_ID} # Valid UUIDv4
+      - CONNECTOR_ID=9546a6e6-1d75-4ec6-9f5d-bf49fea28320 # Valid UUIDv4
       - CONNECTOR_TYPE=INTERNAL_IMPORT_FILE
       - CONNECTOR_NAME=ImportDocument
       - CONNECTOR_VALIDATE_BEFORE_IMPORT=true # Validate any bundle before import
@@ -521,7 +521,7 @@ services:
       - UNPAC_ME_API_KEY=eyJpZCI6IjYxZGMzNjk0YTIwN2E1MDFlOGZlZjgzNyIsInNpZyI6IjM5MjRjMmFjMGJjYTM3NWFmNzRiMDNiMTIyMjFiYTA0NDE4ZDdhNjMxYThjYjI4YTc1ZGJmODYyNTc0NmQzMmMifQ==
  # See https://www.unpac.me/account
       - UNPAC_ME_PRIVATE=false # Mark samples are private (only available to PRO users)
-      - "UNPAC_ME_USER_AGENT=UnpacMe OpenCTI Connector v1.0.0" # User agent for UnpacMeApi instantiation
+      - UNPAC_ME_USER_AGENT=UnpacMe OpenCTI Connector v1.0.0 # User agent for UnpacMeApi instantiation
       - UNPAC_ME_LESS_NOISE=false # Only upload unpacked samples if they matched a malware family
       - UNPAC_ME_FAMILY_COLOR=#0059f7 # Label color for family
       - UNPAC_ME_TAG_COLOR=#54483b # Label color for all other labels
