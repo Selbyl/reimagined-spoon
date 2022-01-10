@@ -27,4 +27,7 @@ With a fresh Ubuntu Desktop or Server install run the following commands in term
       Wait
       Login to http://localhost:8080
       
+          
 DON'T FORGET TO CHANGE THE DEFAULT CREDENTIALS AND ADD YOUR OWN API KEYS IN THE COMPOSE FILE
+
+This stack was designed for an Ubuntu VM with 50GB of RAM and 16 CPU cores, adjust the replicas value for opencti/worker:latest as needed. 
