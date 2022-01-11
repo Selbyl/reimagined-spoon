@@ -555,7 +555,7 @@ services:
       - CONNECTOR_UPDATE_EXISTING_DATA=false
       - CONNECTOR_LOG_LEVEL=info
       - MISP_URL=https://localhost # Required
-      - MISP_REFERENCE_URL=https://localhost # Optional, will be used to create external reference to MISP event (default is "url")
+      - MISP_REFERENCE_URL=https://localhost# Optional, will be used to create external reference to MISP event (default is "url")
       - MISP_KEY=w2VG335razF05QZPfJd3A6XpdaI6PsNShlwutVKC # Required
       - MISP_SSL_VERIFY=False # Required
       - MISP_DATETIME_ATTRIBUTE=2000-01-01 # Required, filter to be used in query for new MISP events
@@ -595,6 +595,7 @@ services:
 
   misp:
     image: coolacid/misp-docker:core-latest
+    restart: always
     depends_on:
       - redis
       - db
@@ -627,6 +628,7 @@ services:
 #      - "WORKERS=1" #If set to a value larger than 1 this will increase the number of parallel worker processes
   misp-modules:
     image: coolacid/misp-docker:modules-latest
+    restart: always
     environment:
       - REDIS_BACKEND=redis
     depends_on:
