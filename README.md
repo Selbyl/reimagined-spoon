@@ -41,3 +41,7 @@ docker run -d -p 8000:8000 -p 9443:9443 --name portainer --restart=always -v por
 
 wsl -d docker-desktop
 sysctl -w vm.max_map_count=1048575
+
+Either run the stack in portainer or through powershell CD to download directory and run
+
+docker-compose up -d 
