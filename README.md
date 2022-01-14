@@ -16,7 +16,7 @@ With a fresh Ubuntu Desktop or Server install run the following commands in term
   
   sudo docker volume create portainer
   
-  docker run -d -p 8000:8000 -p 9443:9443 --name portainer --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v portainer_data:/data cr.portainer.io/portainer/portainer-ce:latest
+  docker run -d -p 8000:8000 -p 9443:9443 --name portainer --restart=always -v portainer_data:/data cr.portainer.io/portainer/portainer-ce:latest
   
   Access the portainer dashboard at https://localhost:9443, 
   Select Stacks
@@ -31,3 +31,13 @@ With a fresh Ubuntu Desktop or Server install run the following commands in term
 DON'T FORGET TO CHANGE THE DEFAULT CREDENTIALS AND ADD YOUR OWN API KEYS IN THE COMPOSE FILE
 
 This stack was designed for an Ubuntu VM with 50GB of RAM and 16 CPU cores, adjust the replicas value for opencti/worker:latest as needed. 
+
+
+UPDATE 1/14/2022
+
+This stack now works for Windows' Docker Desktop using WSL2. The stack will now operate on only 32GB of RAM. After installing Docker Desktop for Windows run the following commands: 
+
+docker run -d -p 8000:8000 -p 9443:9443 --name portainer --restart=always -v portainer_data:/data cr.portainer.io/portainer/portainer-ce:latest
+
+wsl -d docker-desktop
+sysctl -w vm.max_map_count=1048575
