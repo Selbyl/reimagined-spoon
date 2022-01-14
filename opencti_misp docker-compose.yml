@@ -6,7 +6,7 @@ services:
     volumes:
       - redisdata:/data
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.16.2
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.16.3
     volumes:
       - esdata:/usr/share/elasticsearch/data
     environment:
@@ -47,7 +47,7 @@ services:
   opencti:
     image: opencti/platform:latest
     environment:
-      - NODE_OPTIONS=--max-old-space-size=8096
+      - NODE_OPTIONS=--max-old-space-size=16192
       - APP__PORT=8080
       - APP__ADMIN__EMAIL=${OPENCTI_ADMIN_EMAIL}
       - APP__ADMIN__PASSWORD=${OPENCTI_ADMIN_PASSWORD}
@@ -88,7 +88,7 @@ services:
       - opencti
     deploy:
       mode: replicated
-      replicas: 50
+      replicas: 20
     restart: always
   connector-history:
     image: opencti/connector-history:latest
@@ -185,12 +185,12 @@ services:
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=1c5aa834-9b8a-41e9-abd2-d798dfb07b49
+      - CONNECTOR_ID=8ead87af-acdc-4992-b294-cf30b01b056a
       - CONNECTOR_TYPE=EXTERNAL_IMPORT
       - CONNECTOR_NAME=AlienVault
       - CONNECTOR_SCOPE=alienvault
       - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_UPDATE_EXISTING_DATA=false
       - CONNECTOR_LOG_LEVEL=info
       - ALIENVAULT_BASE_URL=https://otx.alienvault.com
       - ALIENVAULT_API_KEY=7df59969f606e79a1768baecb11c4d709f3fd4ef5508e37b1af9def30780e73c
@@ -200,16 +200,18 @@ services:
       - ALIENVAULT_PULSE_START_TIMESTAMP=2000-01-01T00:00:00                  # BEWARE! Could be a lot of pulses!
       - ALIENVAULT_REPORT_TYPE=threat-report
       - ALIENVAULT_REPORT_STATUS=New
-      - ALIENVAULT_GUESS_MALWARE=true                                        # Use tags to guess malware.
+      - ALIENVAULT_GUESS_MALWARE=true                                       # Use tags to guess malware.
       - ALIENVAULT_GUESS_CVE=true                                            # Use tags to guess CVE.
       - ALIENVAULT_EXCLUDED_PULSE_INDICATOR_TYPES=FileHash-MD5,FileHash-SHA1  # Excluded Pulse indicator types.
       - ALIENVAULT_ENABLE_RELATIONSHIPS=true                                  # Enable/Disable relationship creation between SDOs.
       - ALIENVAULT_ENABLE_ATTACK_PATTERNS_INDICATES=true                      # Enable/Disable "indicates" relationships between indicators and attack patterns
       - ALIENVAULT_INTERVAL_SEC=60
     restart: always
+    depends_on:
+      - opencti
   connector-amitt:
-   image: opencti/connector-amitt:latest
-   environment:
+    image: opencti/connector-amitt:latest
+    environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
       - CONNECTOR_ID=b786ddc2-d8d5-49db-9384-ff857ed95e16
@@ -222,7 +224,30 @@ services:
       - AMITT_FILE_URL=https://raw.githubusercontent.com/VVX7/cti/master/amitt-attack/amitt-attack.json
       - PRE_AMITT_FILE_URL=https://raw.githubusercontent.com/VVX7/cti/master/amitt-pre-attack/amitt-pre-attack.json
       - AMITT_INTERVAL=2 # In days, must be strictly greater than 1
-   restart: always
+    restart: always
+    depends_on:
+      - opencti
+  connector-cape:
+    image: opencti/connector-cape:latest
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=72c1b543-51af-44dc-b1fd-4d4e0e3b4a64
+      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_NAME=CAPE
+      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_LOG_LEVEL=info
+      - CAPE_CREATE_INDICATORS=true
+      - CAPE_ENABLE_NETWORK_TRAFFIC=false # enable creation of net Traffic (Very Loud)
+      - CAPE_ENABLE_REGISTRY_KEYS=false # enable creation of Created registry Keys (Very Loud)
+      - CAPE_API_URL=https://sandbox.no/apiv2/ # CAPE API EP
+      - CAPE_BASE_URL=https://sandbox.no/ # CAPE Web UI URL
+      - CAPE_INTERVAL=30 #in Min
+      - CAPE_START_TASK_ID=0 #in Min
+      - CAPE_REPORT_SCORE=7
+      - VERIFY_SSL=true
+    restart: always
   connector-cryptolaemus:
     image: opencti/connector-cryptolaemus:latest
     environment:
@@ -236,6 +261,8 @@ services:
       - CONNECTOR_UPDATE_EXISTING_DATA=false
       - CONNECTOR_LOG_LEVEL=info
     restart: always
+    depends_on:
+      - opencti
   connector-cve:
     image: opencti/connector-cve:latest
     environment:
@@ -246,7 +273,7 @@ services:
       - CONNECTOR_NAME=Common Vulnerabilities and Exposures
       - CONNECTOR_SCOPE=identity,vulnerability
       - CONNECTOR_CONFIDENCE_LEVEL=75 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_UPDATE_EXISTING_DATA=false
       - CONNECTOR_RUN_AND_TERMINATE=false
       - CONNECTOR_LOG_LEVEL=info
       - CVE_IMPORT_HISTORY=true # Import history at the first run (after only recent), reset the connector state if you want to re-import
@@ -254,6 +281,8 @@ services:
       - CVE_HISTORY_DATA_FEED=https://nvd.nist.gov/feeds/json/cve/1.1/
       - CVE_INTERVAL=2 # In days, must be strictly greater than 1
     restart: always
+    depends_on:
+      - opencti
   connector-cyber-threat-coalition:
     image: opencti/connector-cyber-threat-coalition:latest
     environment:
@@ -271,6 +300,8 @@ services:
       - CYBER_THREAT_COALITION_CREATE_INDICATORS=true
       - CYBER_THREAT_COALITION_CREATE_OBSERVABLES=true
     restart: always
+    depends_on:
+      - opencti
   connector-cybercrimetracker:
     image: opencti/connector-cybercrime-tracker:latest
     environment:
@@ -281,13 +312,36 @@ services:
       - CONNECTOR_NAME=Cybercrime-Tracker
       - CONNECTOR_SCOPE=cybercrime-tracker
       - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_UPDATE_EXISTING_DATA=false
       - CONNECTOR_LOG_LEVEL=info
       - CYBERCRIME_TRACKER_FEED_URL=http://cybercrime-tracker.net/rss.xml
       - CYBERCRIME_TRACKER_TLP=WHITE
-      - CYBERCRIME_TRACKER_INTERVAL=86400
+      - CYBERCRIME_TRACKER_INTERVAL=3600
       - CYBERCRIME_TRACKER_CREATE_INDICATORS=true
       - CYBERCRIME_TRACKER_CREATE_OBSERVABLES=true
+    restart: always
+    depends_on:
+      - opencti
+  connector-cuckoo:
+    image: opencti/connector-cuckoo:latest
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=dba1e3ac-3088-41b8-b7fe-0c8ff12ed28c
+      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_NAME=cuckoo
+      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_LOG_LEVEL=info
+      - CUCKOO_CREATE_INDICATORS=true
+      - CUCKOO_ENABLE_NETWORK_TRAFFIC=true # enable creation of net Traffic (Very Loud)
+      - CUCKOO_ENABLE_REGISTRY_KEYS=true # enable creation of Created registry Keys (Very Loud)
+      - CUCKOO_API_URL=https://sandbox.no/api/ # Cuckoo API EP
+      - CUCKOO_BASE_URL=https://sandbox.no/ # Cuckoo Web UI URL
+      - CUCKOO_INTERVAL=15 #in Min
+      - CUCKOO_START_TASK_ID=1 #in Min
+      - CUCKOO_REPORT_SCORE=7
+      - VERIFY_SSL=false
     restart: always
   connector-malpedia:
     image: opencti/connector-malpedia:latest
@@ -299,23 +353,23 @@ services:
       - CONNECTOR_NAME=Malpedia
       - CONNECTOR_SCOPE=malpedia
       - CONNECTOR_CONFIDENCE_LEVEL=30 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_UPDATE_EXISTING_DATA=false
       - CONNECTOR_LOG_LEVEL=info
       - MALPEDIA_AUTH_KEY= # Empty key only fetches TLP:WHITE information
-      - MALPEDIA_INTERVAL_SEC=86400 # Run once every day
+      - MALPEDIA_INTERVAL_SEC=3600 # Run once every day
       - MALPEDIA_IMPORT_INTRUSION_SETS=true
       - MALPEDIA_IMPORT_YARA=true
       - MALPEDIA_CREATE_INDICATORS=true
       - MALPEDIA_CREATE_OBSERVABLES=true
     restart: always
   connector-malware-bazaar-recent-additions:
-    image: opencti/connector-malwarebazaar-recent-additions:latest
+    image: opencti/connector-malwarebazaar-recent-additions:5.1.3
     environment:
       - OPENCTI_URL=http://opencti:8080
-      - OPENCTI_TOKEN=57d1ae1d-cc0e-4645-be51-42ec815b536b
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
       - CONNECTOR_ID=MalwareBazaar_Recent_Additions
       - CONNECTOR_TYPE=EXTERNAL_IMPORT
-      - CONNECTOR_NAME=MalwareBazaar Recent Additions
+      - "CONNECTOR_NAME=MalwareBazaar Recent Additions"
       - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_UPDATE_EXISTING_DATA=true
       - CONNECTOR_LOG_LEVEL=info
@@ -326,6 +380,8 @@ services:
       - MALWAREBAZAAR_RECENT_ADDITIONS_LABELS=malware-bazar # (Optional) Labels to apply to uploaded Artifacts. (Comma separated)
       - MALWAREBAZAAR_RECENT_ADDITIONS_LABELS_COLOR=#54483b # Color to use for labels
     restart: always
+    depends_on:
+      - opencti
   connector-mitre:
     image: opencti/connector-mitre:latest
     environment:
@@ -336,7 +392,7 @@ services:
       - CONNECTOR_NAME=MITRE ATT&CK
       - CONNECTOR_SCOPE=marking-definition,identity,attack-pattern,course-of-action,intrusion-set,campaign,malware,tool,report,external-reference-as-report
       - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_UPDATE_EXISTING_DATA=false
       - CONNECTOR_RUN_AND_TERMINATE=false
       - CONNECTOR_LOG_LEVEL=info
       - MITRE_ENTERPRISE_FILE_URL=https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json
@@ -345,6 +401,8 @@ services:
       - MITRE_ICS_ATTACK_FILE_URL=https://raw.githubusercontent.com/mitre/cti/master/ics-attack/ics-attack.json
       - MITRE_INTERVAL=2 # In days, must be strictly greater than 1
     restart: always
+    depends_on:
+      - opencti
   connector-riskiq:
     image: opencti/connector-riskiq:latest
     environment:
@@ -358,31 +416,35 @@ services:
       - CONNECTOR_LOG_LEVEL=info
       - RISKIQ_BASE_URL=https://api.riskiq.net/pt/v2
       - RISKIQ_USER=selbyclebert@gmail.com
-      - RISKIQ_PASSWORD=HKSFQJ8aeTGjk6u
-      - RISKIQ_INTERVAL_SEC=86400
+      - RISKIQ_PASSWORD=e7da45e803f52a6df60c33bd2c2aa5c5bb3f657072656b1f4e036a552ec6f161
+      - RISKIQ_INTERVAL_SEC=3600
     restart: always
+    depends_on:
+      - opencti
   connector-urlhaus-recent-payloads:
     image: opencti/connector-urlhaus-recent-payloads:latest
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=URLHaus_Recent_Payloads
+      - CONNECTOR_ID=a9d68406-33df-4d97-a22c-e046c1472d60
       - CONNECTOR_TYPE=EXTERNAL_IMPORT
       - CONNECTOR_NAME=URLHaus Recent Payloads
       - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_UPDATE_EXISTING_DATA=true
       - CONNECTOR_LOG_LEVEL=info
       - URLHAUS_RECENT_PAYLOADS_API_URL=https://urlhaus-api.abuse.ch/v1/
-      - URLHAUS_RECENT_PAYLOADS_COOLDOWN_SECONDS=300 # Time to wait in seconds between subsequent requests
-      - URLHAUS_RECENT_PAYLOADS_INCLUDE_FILETYPES=exe,dll,docm,docx,doc,xls,xlsx,xlsm,js,xll # (Optional) Only download files if any tag matches. (Comma separated)
-      - URLHAUS_RECENT_PAYLOADS_INCLUDE_SIGNATURES= # (Optional) Only download files uploaded by these reporters. (Comma separated)
-      - URLHAUS_RECENT_PAYLOADS_SKIP_UNKNOWN_FILETYPES=true # Skip files with an unknown file type
-      - URLHAUS_RECENT_PAYLOADS_SKIP_NULL_SIGNATURE=true # Skip files that didn't match known Yara signatures
+      - URLHAUS_RECENT_PAYLOADS_COOLDOWN_SECONDS=180 # Time to wait in seconds between subsequent requests
+      - URLHAUS_RECENT_PAYLOADS_INCLUDE_FILETYPES=true
+      - URLHAUS_RECENT_PAYLOADS_INCLUDE_SIGNATURES=true
+      - URLHAUS_RECENT_PAYLOADS_SKIP_UNKNOWN_FILETYPES=flase # Skip files with an unknown file type
+      - URLHAUS_RECENT_PAYLOADS_SKIP_NULL_SIGNATURE=false # Skip files that didn't match known Yara signatures
       - URLHAUS_RECENT_PAYLOADS_LABELS=urlhaus # (Optional) Labels to apply to uploaded Artifacts. (Comma separated)
       - URLHAUS_RECENT_PAYLOADS_LABELS_COLOR=#54483b
       - URLHAUS_RECENT_PAYLOADS_SIGNATURE_LABEL_COLOR=#0059f7 # Color for signature match label
       - URLHAUS_RECENT_PAYLOADS_FILETYPE_LABEL_COLOR=#54483b # Color to use for filetype label
     restart: always
+    depends_on:
+      - opencti
   connector-urlhaus:
     image: opencti/connector-urlhaus:latest
     environment:
@@ -398,18 +460,20 @@ services:
       - URLHAUS_CSV_URL=https://urlhaus.abuse.ch/downloads/csv_recent/
       - URLHAUS_IMPORT_OFFLINE=true
       - URLHAUS_CREATE_INDICATORS=true
-      - URLHAUS_INTERVAL=3 # In days, must be strictly greater than 1    
+      - URLHAUS_INTERVAL=2 # In days, must be strictly greater than 1    
     restart: always
+    depends_on:
+      - opencti
   connector-virustotal-livehunt-notifications:
     image: opencti/connector-virustotal-livehunt-notifications:latest
     environment:
       - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=Virustotal_Livehunt_Notifications
+      - CONNECTOR_ID=9009601f-2e61-4d9a-8502-51245d4c4582
       - CONNECTOR_TYPE=EXTERNAL_IMPORT
       - CONNECTOR_NAME=Virustotal Livehunt Notifications
       - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_UPDATE_EXISTING_DATA=false
       - CONNECTOR_LOG_LEVEL=info
       - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_API_KEY=aa7441299612ef2cd0c6e39639d46b8014af5815cf204771e298befc5b590ae1 # Private API Key
       - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_COOLDOWN_SECONDS=300 # Time to wait in seconds between subsequent requests
@@ -418,10 +482,12 @@ services:
       - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_EXTENSIONS=exe,dll # (Optional) Comma separated filter to only download files matching these extensions
       - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_MIN_FILE_SIZE=1000 # (Optional) Don't download files smaller than this many bytes
       - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_MAX_FILE_SIZE=52428800 # (Optional) Don't download files larger than this many bytes
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_MAX_AGE=1 # (Optional) Don't download files older than this many days (first seen in VT)
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_MIN_POSITIVES=5 # (Optional) Don't download files with less than this many vendors marking malicious
+      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_MAX_AGE=3650 # (Optional) Don't download files older than this many days (first seen in VT)
+      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_MIN_POSITIVES=0 # (Optional) Don't download files with less than this many vendors marking malicious
       - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_LABELS=livehunt # (Optional) Comma separated labels to apply for uploaded files
     restart: always
+    depends_on:
+      - opencti
   connector-abuseipdb:
     image: opencti/connector-abuseipdb:latest
     environment:
@@ -436,6 +502,24 @@ services:
       - CONNECTOR_LOG_LEVEL=info
       - ABUSEIPDB_API_KEY=e3bfd8516f8186c229648dc3c0e87fc25506d6636b7efe1be010188586c0af111fdf038999f5a5d0
       - ABUSEIPDB_MAX_TLP=TLP:AMBER
+    restart: always
+    depends_on:
+      - opencti
+  connector-vxvault:
+    image: opencti/connector-vxvault:5.1.3
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=ac0ebf7b-c39f-46e6-a360-f52de9ac4db8
+      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - "CONNECTOR_NAME=VX Vault URL list"
+      - CONNECTOR_SCOPE=vxvault
+      - CONNECTOR_CONFIDENCE_LEVEL=40 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_LOG_LEVEL=info
+      - VXVAULT_URL=http://vxvault.net/URL_List.php
+      - VXVAULT_CREATE_INDICATORS=true
+      - VXVAULT_INTERVAL=2 # In days, must be strictly greater than 1
     restart: always
   connector-greynoise:
     image: opencti/connector-greynoise:latest
@@ -456,6 +540,8 @@ services:
       - GREYNOISE_SIGHTING_NOT_SEEN=false
       - GREYNOISE_SPOOFABLE_CONFIDENCE_LEVEL=30
     restart: always
+    depends_on:
+      - opencti
   connector-intezer-sandbox:
     image: opencti/connector-intezer-sandbox:latest
     environment:
@@ -476,6 +562,8 @@ services:
       - INTEZER_SANDBOX_SUSPICIOUS_COLOR=#f79e00
       - INTEZER_SANDBOX_MAX_TLP=TLP:AMBER
     restart: always
+    depends_on:
+      - opencti
   connector-ivre:
     image: opencti/connector-ivre:latest
     environment:
@@ -490,6 +578,8 @@ services:
       - CONNECTOR_LOG_LEVEL=info
       - IVRE_MAX_TLP=TLP:AMBER
     restart: always
+    depends_on:
+      - opencti
   connector-shodan:
     image: opencti/connector-shodan:latest
     environment:
@@ -502,10 +592,12 @@ services:
       - CONNECTOR_AUTO=true
       - CONNECTOR_CONFIDENCE_LEVEL=75 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
-      - SHODAN_TOKEN=ChangeMe
+      - SHODAN_TOKEN=17yWj9nuQlz8iLgpSaT5dLRN34MPi3fK
       - SHODAN_MAX_TLP=TLP:AMBER
       - SHODAN_CREATE_INDICATORS=true
     restart: always
+    depends_on:
+      - opencti
   connector-hatching-triage-sandbox:
     image: opencti/connector-unpac-me:latest
     environment:
@@ -515,7 +607,7 @@ services:
       - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
       - CONNECTOR_NAME=UnpacMe
       - CONNECTOR_SCOPE=Artifact
-      - CONNECTOR_AUTO=false # Enable/disable auto-enrichment of observables
+      - CONNECTOR_AUTO=true # Enable/disable auto-enrichment of observables
       - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
       - UNPAC_ME_API_KEY=eyJpZCI6IjYxZGMzNjk0YTIwN2E1MDFlOGZlZjgzNyIsInNpZyI6IjM5MjRjMmFjMGJjYTM3NWFmNzRiMDNiMTIyMjFiYTA0NDE4ZDdhNjMxYThjYjI4YTc1ZGJmODYyNTc0NmQzMmMifQ==
@@ -527,6 +619,8 @@ services:
       - UNPAC_ME_TAG_COLOR=#54483b # Label color for all other labels
       - UNPAC_ME_MAX_TLP=TLP:AMBER
     restart: always
+    depends_on:
+      - opencti
   connector-virustotal:
     image: opencti/connector-virustotal:latest
     environment:
@@ -542,6 +636,8 @@ services:
       - VIRUSTOTAL_TOKEN=aa7441299612ef2cd0c6e39639d46b8014af5815cf204771e298befc5b590ae1
       - VIRUSTOTAL_MAX_TLP=TLP:AMBER
     restart: always
+    depends_on:
+      - opencti
   connector-misp:
     image: opencti/connector-misp:latest
     environment:
@@ -554,9 +650,9 @@ services:
       - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_UPDATE_EXISTING_DATA=false
       - CONNECTOR_LOG_LEVEL=info
-      - MISP_URL=https://localhost # Required
-      - MISP_REFERENCE_URL=https://localhost# Optional, will be used to create external reference to MISP event (default is "url")
-      - MISP_KEY=w2VG335razF05QZPfJd3A6XpdaI6PsNShlwutVKC # Required
+      - MISP_URL=http://localhost # Required
+      - MISP_REFERENCE_URL=https://localhost # Optional, will be used to create external reference to MISP event (default is "url")
+      - MISP_KEY=7wCvKLO2J9UFHGDiRjr0tcvCrXTAlKvrOagr87IO # Required
       - MISP_SSL_VERIFY=False # Required
       - MISP_DATETIME_ATTRIBUTE=2000-01-01 # Required, filter to be used in query for new MISP events
       - MISP_CREATE_REPORTS=True # Required, create report for MISP event
@@ -577,6 +673,8 @@ services:
       - MISP_IMPORT_UNSUPPORTED_OBSERVABLES_AS_TEXT=True #  Optional, import unsupported observable as x_opencti_text
       - MISP_INTERVAL=1 # Required, in minutes
     restart: always
+    depends_on:
+      - opencti
   mail:
     image: namshi/smtp:latest
   db:
@@ -615,17 +713,17 @@ services:
       - CRON_USER_ID=1        # The MISP user ID to run cron jobs as
 #      - "SYNCSERVERS=1 2 3 4"  # The MISP Feed servers to sync in the cron job
       # Database Configuration (And their defaults)
-#      - "MYSQL_HOST=db"
-#      - "MYSQL_USER=misp"
-#      - "MYSQL_PASSWORD=example" # NOTE: This should be AlphaNum with no Special Chars. Otherwise, edit config files after first run. 
-#      - "MYSQL_DATABASE=misp"
+      - "MYSQL_HOST=db"
+      - "MYSQL_USER=misp"
+      - "MYSQL_PASSWORD=example" # NOTE: This should be AlphaNum with no Special Chars. Otherwise, edit config files after first run. 
+      - "MYSQL_DATABASE=misp"
       # Optional Settings
 #      - "NOREDIR=true" # Do not redirect port 80
 #      - "DISIPV6=true" # Disable IPV6 in nginx
 #      - "CERTAUTH=optional" # Can be set to optional or on - Step 2 of https://github.com/MISP/MISP/tree/2.4/app/Plugin/CertAuth is still required
 #      - "SECURESSL=true" # Enable higher security SSL in nginx
-#      - "MISP_MODULES_FQDN=http://misp-modules" # Set the MISP Modules FQDN, used for Enrichment_services_url/Import_services_url/Export_services_url
-#      - "WORKERS=1" #If set to a value larger than 1 this will increase the number of parallel worker processes
+      - MISP_MODULES_FQDN=http://misp-modules # Set the MISP Modules FQDN, used for Enrichment_services_url/Import_services_url/Export_services_url
+      - WORKERS=10 #If set to a value larger than 1 this will increase the number of parallel worker processes
   misp-modules:
     image: coolacid/misp-docker:modules-latest
     restart: always
