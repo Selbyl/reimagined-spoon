@@ -193,7 +193,7 @@ services:
       - CONNECTOR_UPDATE_EXISTING_DATA=true
       - CONNECTOR_LOG_LEVEL=info
       - ALIENVAULT_BASE_URL=https://otx.alienvault.com
-      - ALIENVAULT_API_KEY=7df59969f606e79a1768baecb11c4d709f3fd4ef5508e37b1af9def30780e73c
+      - ALIENVAULT_API_KEY=CHANGEME
       - ALIENVAULT_TLP=White
       - ALIENVAULT_CREATE_OBSERVABLES=true
       - ALIENVAULT_CREATE_INDICATORS=true
@@ -434,7 +434,7 @@ services:
       - CONNECTOR_AUTO=true
       - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
-      - ABUSEIPDB_API_KEY=e3bfd8516f8186c229648dc3c0e87fc25506d6636b7efe1be010188586c0af111fdf038999f5a5d0
+      - ABUSEIPDB_API_KEY=CHANGEME
       - ABUSEIPDB_MAX_TLP=TLP:AMBER
     restart: always
   connector-greynoise:
@@ -449,7 +449,7 @@ services:
       - CONNECTOR_AUTO=true
       - CONNECTOR_CONFIDENCE_LEVEL=80 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
-      - GREYNOISE_KEY=Fnbm5Hk7hcvymJy2kzbblsPLE22gRyaLg6zcExfxUkdld9aiRiniQvE9Zv7aRmJt
+      - GREYNOISE_KEY=CHANGEME
       - GREYNOISE_MAX_TLP=TLP:AMBER
       - GREYNOISE_NAME=GreyNoise sensors
       - GREYNOISE_DESCRIPTION=GreyNoise collects and analyzes untargeted, widespread, and opportunistic scan and attack activity that reaches every server directly connected to the Internet.
@@ -468,7 +468,7 @@ services:
       - CONNECTOR_AUTO=true # Enable/disable auto-enrichment of observables
       - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
-      - INTEZER_SANDBOX_API_KEY=40a47c4e-33ce-40f1-b8c9-5506f2cdcb3c # See https://analyze.intezer.com/account-details
+      - INTEZER_SANDBOX_API_KEY=CHANGEME
       - INTEZER_SANDBOX_FAMILY_COLOR=#0059f7 # Label color for family
       - INTEZER_SANDBOX_MALICIOUS_COLOR=#d90e18 # Label color for malicious verdict
       - INTEZER_SANDBOX_TRUSTED_COLOR=#d90e18 # And so on...
@@ -518,7 +518,7 @@ services:
       - CONNECTOR_AUTO=false # Enable/disable auto-enrichment of observables
       - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
-      - UNPAC_ME_API_KEY=eyJpZCI6IjYxZGMzNjk0YTIwN2E1MDFlOGZlZjgzNyIsInNpZyI6IjM5MjRjMmFjMGJjYTM3NWFmNzRiMDNiMTIyMjFiYTA0NDE4ZDdhNjMxYThjYjI4YTc1ZGJmODYyNTc0NmQzMmMifQ==
+      - UNPAC_ME_API_KEY=CHANGEME
  # See https://www.unpac.me/account
       - UNPAC_ME_PRIVATE=false # Mark samples are private (only available to PRO users)
       - UNPAC_ME_USER_AGENT=UnpacMe OpenCTI Connector v1.0.0 # User agent for UnpacMeApi instantiation
@@ -539,7 +539,7 @@ services:
       - CONNECTOR_AUTO=true # Enable/disable auto-enrichment of observables
       - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
-      - VIRUSTOTAL_TOKEN=aa7441299612ef2cd0c6e39639d46b8014af5815cf204771e298befc5b590ae1
+      - VIRUSTOTAL_TOKEN=CHANGEME
       - VIRUSTOTAL_MAX_TLP=TLP:AMBER
     restart: always
   connector-misp:
@@ -556,7 +556,7 @@ services:
       - CONNECTOR_LOG_LEVEL=info
       - MISP_URL=https://localhost # Required
       - MISP_REFERENCE_URL=https://192.168.1.191 # Optional, will be used to create external reference to MISP event (default is "url")
-      - MISP_KEY=w2VG335razF05QZPfJd3A6XpdaI6PsNShlwutVKC # Required
+      - MISP_KEY=CHANGEME # Required
       - MISP_SSL_VERIFY=False # Required
       - MISP_DATETIME_ATTRIBUTE=2000-01-01 # Required, filter to be used in query for new MISP events
       - MISP_CREATE_REPORTS=True # Required, create report for MISP event
