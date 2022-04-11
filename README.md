@@ -45,3 +45,7 @@ sysctl -w vm.max_map_count=1048575
 Either run the stack in portainer or through powershell CD to download directory and run
 
 docker-compose up -d 
+
+UPDATE APRIL 2022
+
+New Features added, the stack now includes TheHive and Cortex with all analyzers included. This full SOC-In-Box solution should allow any team to begin a basic and free incident response process within a few hours of configuring. 
