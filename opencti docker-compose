@@ -729,7 +729,7 @@ services:
       replicas: 1
     restart: always
   connector-opencti-connector:
-    image: opencti/connector-opencti:5.7.3
+    image: opencti/connector-opencti:${OPENCTI_VERSION}
     environment:
       - OPENCTI_URL=${OPENCTI_URL}
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
