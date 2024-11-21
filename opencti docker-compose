@@ -1,22 +1,32 @@
-version: '3'
 services:
   redis:
-    image: redis:7.0.9
+    image: redis:7.4.0
     restart: always
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.6.2
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.16.0
     volumes:
       - esdata:/usr/share/elasticsearch/data
     environment:
-      # Comment out the line below for single-node
+      # Comment-out the line below for a cluster of multiple nodes
       - discovery.type=single-node
-      # Uncomment line below below for a cluster of multiple nodes
-      # - cluster.name=docker-cluster
-      - xpack.ml.enabled=true
+      # Uncomment the line below below for a cluster of multiple nodes
+      #- cluster.name=docker-cluster
+      - xpack.ml.enabled=false
       - xpack.security.enabled=false
+      - thread_pool.search.queue_size=15000
+      - logger.org.elasticsearch.discovery="ERROR"
       - "ES_JAVA_OPTS=-Xms${ELASTIC_MEMORY_SIZE} -Xmx${ELASTIC_MEMORY_SIZE}"
+      - thread_pool.write.queue_size=10000
+    ports:
+      - 9200:9200
+      - 9300:9300
     restart: always
     ulimits:
       memlock:
@@ -25,8 +35,23 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+    healthcheck:
+      test: curl -s http://elasticsearch:9200 >/dev/null || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 50
+  opencti-dev-kibana:
+    container_name: opencti-dev-kibana
+    image: docker.elastic.co/kibana/kibana:8.16.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
   minio:
-    image: minio/minio:RELEASE.2023-02-27T18-10-45Z
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z # Use "minio/minio:RELEASE.2024-05-28T17-19-04Z-cpuv1" to troubleshoot compatibility issues with CPU
     volumes:
       - s3data:/data
     ports:
@@ -35,24 +60,41 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}    
     command: server /data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
     restart: always
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 15s
+      retries: 50
   rabbitmq:
-    image: rabbitmq:3.11-management
+    image: rabbitmq:3.13-management
+    hostname: "rabbit01"
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      - RABBITMQ_NODENAME=rabbit01@localhost
+      - RABBITMQ_ULIMIT_NOFILES=65536
+      - RABBITMQ_DISK_FREE_LIMIT=50MB
+      - RABBITMQ_CHANNEL_MAX=2048
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - amqpdata:/var/lib/rabbitmq
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+    ports:
+      - "5672:5672"
+      - "15672:15672"
   opencti:
-    image: opencti/platform:${OPENCTI_VERSION}
+    image: opencti/platform:6.4.1
     environment:
-      - NODE_OPTIONS=--max-old-space-size=8096
+      - NODE_OPTIONS=--max-old-space-size=32000
       - APP__PORT=8080
       - APP__BASE_URL=${OPENCTI_BASE_URL}
       - APP__ADMIN__EMAIL=${OPENCTI_ADMIN_EMAIL}
@@ -76,72 +118,83 @@ services:
       - SMTP__HOSTNAME=${SMTP_HOSTNAME}
       - SMTP__PORT=25
       - PROVIDERS__LOCAL__STRATEGY=LocalStrategy
+      - APP__HEALTH_ACCESS_KEY=${OPENCTI_HEALTHCHECK_ACCESS_KEY}
     ports:
       - "8080:8080"
     depends_on:
-      - redis
-      - elasticsearch
-      - minio
-      - rabbitmq
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     restart: always
+    healthcheck:
+      test:  ["CMD", "wget", "-qO-", "http://opencti:8080/health?health_access_key=${OPENCTI_HEALTHCHECK_ACCESS_KEY}"]
+      interval: 120s
+      timeout: 60s
+      retries: 20
   worker:
-    image: opencti/worker:${OPENCTI_VERSION}
+    image: opencti/worker:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
       - WORKER_LOG_LEVEL=info
     depends_on:
-      - opencti
+      opencti:
+        condition: service_healthy
     deploy:
       mode: replicated
-      replicas: ${WORKER_REPLICAS}
+      replicas: ${NUMBER_WORKERS}
     restart: always
   connector-export-file-stix:
-    image: opencti/connector-export-file-stix:${OPENCTI_VERSION}
+    image: opencti/connector-export-file-stix:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
       - CONNECTOR_ID=${CONNECTOR_EXPORT_FILE_STIX_ID} # Valid UUIDv4
       - CONNECTOR_TYPE=INTERNAL_EXPORT_FILE
       - CONNECTOR_NAME=ExportFileStix2
       - CONNECTOR_SCOPE=application/json
-      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
     restart: always
     depends_on:
-      - opencti
+      opencti:
+        condition: service_healthy
   connector-export-file-csv:
-    image: opencti/connector-export-file-csv:${OPENCTI_VERSION}
+    image: opencti/connector-export-file-csv:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
       - CONNECTOR_ID=${CONNECTOR_EXPORT_FILE_CSV_ID} # Valid UUIDv4
       - CONNECTOR_TYPE=INTERNAL_EXPORT_FILE
       - CONNECTOR_NAME=ExportFileCsv
       - CONNECTOR_SCOPE=text/csv
-      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
     restart: always
     depends_on:
-      - opencti
+      opencti:
+        condition: service_healthy
   connector-export-file-txt:
-    image: opencti/connector-export-file-txt:${OPENCTI_VERSION}
+    image: opencti/connector-export-file-txt:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
       - CONNECTOR_ID=${CONNECTOR_EXPORT_FILE_TXT_ID} # Valid UUIDv4
       - CONNECTOR_TYPE=INTERNAL_EXPORT_FILE
       - CONNECTOR_NAME=ExportFileTxt
       - CONNECTOR_SCOPE=text/plain
-      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
     restart: always
     depends_on:
-      - opencti
+      opencti:
+        condition: service_healthy
   connector-import-file-stix:
-    image: opencti/connector-import-file-stix:${OPENCTI_VERSION}
+    image: opencti/connector-import-file-stix:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
       - CONNECTOR_ID=${CONNECTOR_IMPORT_FILE_STIX_ID} # Valid UUIDv4
       - CONNECTOR_TYPE=INTERNAL_IMPORT_FILE
@@ -149,15 +202,15 @@ services:
       - CONNECTOR_VALIDATE_BEFORE_IMPORT=true # Validate any bundle before import
       - CONNECTOR_SCOPE=application/json,text/xml
       - CONNECTOR_AUTO=true # Enable/disable auto-import of file
-      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
       - CONNECTOR_LOG_LEVEL=info
     restart: always
     depends_on:
-      - opencti
+      opencti:
+        condition: service_healthy
   connector-import-document:
-    image: opencti/connector-import-document:${OPENCTI_VERSION}
+    image: opencti/connector-import-document:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
       - CONNECTOR_ID=${CONNECTOR_IMPORT_DOCUMENT_ID} # Valid UUIDv4
       - CONNECTOR_TYPE=INTERNAL_IMPORT_FILE
@@ -171,271 +224,406 @@ services:
       - IMPORT_DOCUMENT_CREATE_INDICATOR=true
     restart: always
     depends_on:
-      - opencti
-  opencti-dev-kibana:
-    container_name: opencti-dev-kibana
-    image: docker.elastic.co/kibana/kibana:8.6.2
+      opencti:
+        condition: service_healthy
+  connector-analysis:
+    image: opencti/connector-import-document:6.4.1
     environment:
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-    restart: unless-stopped
-    ports:
-      - 5601:5601
-    depends_on:
-      - elasticsearch
-  connector-abuse-ssl:
-    image: opencti/connector-abuse-ssl:${OPENCTI_VERSION}
-    environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=4026b71c-cda4-4a5f-84bf-a7bc06a27c88
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=${CONNECTOR_ANALYSIS_ID} # Valid UUIDv4
+      - CONNECTOR_TYPE=INTERNAL_ANALYSIS
+      - CONNECTOR_NAME=ImportDocumentAnalysis
+      - CONNECTOR_VALIDATE_BEFORE_IMPORT=false # Validate any bundle before import
+      - CONNECTOR_SCOPE=application/pdf,text/plain,text/html
+      - CONNECTOR_AUTO=true # Enable/disable auto-import of file
+      - CONNECTOR_ONLY_CONTEXTUAL=false # Only extract data related to an entity (a report, a threat actor, etc.)
+      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_LOG_LEVEL=info
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-abuse-ssl:
+    image: opencti/connector-abuse-ssl:6.4.1
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=07f79777-5645-4574-90a7-a102019eaa39
       - "CONNECTOR_NAME=Abuse.ch SSL Blacklist"
       - CONNECTOR_SCOPE=abusessl
-      - CONNECTOR_CONFIDENCE_LEVEL=70
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_LOG_LEVEL=error
       - ABUSESSL_URL=https://sslbl.abuse.ch/blacklist/sslipblacklist.csv
-      - ABUSESSL_INTERVAL=5
+      - ABUSESSL_INTERVAL=360 # Time to wait in minutes between subsequent requests
     restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-abuseipdb-ipblacklist:
-    image: opencti/connector-abuseipdb-ipblacklist:${OPENCTI_VERSION}
+    image: opencti/connector-abuseipdb-ipblacklist:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=b8420462-94d8-4c74-8bb4-d02df4265c3e
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=2c0ce411-c0ba-4626-950c-a893d8a79a15
       - "CONNECTOR_NAME=AbuseIPDB IP Blacklist"
       - CONNECTOR_SCOPE=abuseipdb
-      - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_LOG_LEVEL=error
       - ABUSEIPDB_URL=https://api.abuseipdb.com/api/v2/blacklist
-      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY}
+      - ABUSEIPDB_API_KEY=${ABUSE_API_KEY}
       - ABUSEIPDB_SCORE=100
-      - ABUSEIPDB_LIMIT=10000
+      - ABUSEIPDB_LIMIT=100000
       - ABUSEIPDB_INTERVAL=2 #Day
     restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-alienvault:
-    image: opencti/connector-alienvault:${OPENCTI_VERSION}
+    image: opencti/connector-alienvault:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=b3599a56-9217-4674-8871-4762ff1cd750
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=df4954e0-5df2-4959-a5a6-8388fd5b3d2a
       - CONNECTOR_NAME=AlienVault
       - CONNECTOR_SCOPE=alienvault
-      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_LOG_LEVEL=error
+      - CONNECTOR_DURATION_PERIOD=PT30M # In ISO8601 Format starting with "P" for Period ex: "PT30M" = Period time of 30 minutes
       - ALIENVAULT_BASE_URL=https://otx.alienvault.com
-      - ALIENVAULT_API_KEY=${ALIENVAULT_API_KEY}
+      - ALIENVAULT_API_KEY=4987587e9dafc1dff6cd77067eba20e9a360a3740b21761b103bfcd747da75ea
       - ALIENVAULT_TLP=White
       - ALIENVAULT_CREATE_OBSERVABLES=true
       - ALIENVAULT_CREATE_INDICATORS=true
-      - ALIENVAULT_PULSE_START_TIMESTAMP=2020-01-01T00:00:00                  # BEWARE! Could be a lot of pulses!
+      - ALIENVAULT_PULSE_START_TIMESTAMP=2022-01-01T00:00:00                  # BEWARE! Could be a lot of pulses!
       - ALIENVAULT_REPORT_TYPE=threat-report
       - ALIENVAULT_REPORT_STATUS=New
       - ALIENVAULT_GUESS_MALWARE=true                                        # Use tags to guess malware.
       - ALIENVAULT_GUESS_CVE=true                                            # Use tags to guess CVE.
       - ALIENVAULT_EXCLUDED_PULSE_INDICATOR_TYPES=FileHash-MD5,FileHash-SHA1  # Excluded Pulse indicator types.
       - ALIENVAULT_ENABLE_RELATIONSHIPS=true                                  # Enable/Disable relationship creation between SDOs.
-      - ALIENVAULT_ENABLE_ATTACK_PATTERNS_INDICATES=true                      # Enable/Disable "indicates" relationships between indicators and attack patterns
-      - ALIENVAULT_INTERVAL_SEC=60
+      - ALIENVAULT_ENABLE_ATTACK_PATTERNS_INDICATES=TRUE                     # Enable/Disable "indicates" relationships between indicators and attack patterns
+      - ALIENVAULT_INTERVAL_SEC=1800
+      - ALIENVAULT_DEFAULT_X_OPENCTI_SCORE=50
+      - ALIENVAULT_X_OPENCTI_SCORE_IP=60
+      - ALIENVAULT_X_OPENCTI_SCORE_DOMAIN=70
+      - ALIENVAULT_X_OPENCTI_SCORE_HOSTNAME=75
+      - ALIENVAULT_X_OPENCTI_SCORE_EMAIL=70
+      - ALIENVAULT_X_OPENCTI_SCORE_FILE=85
+      - ALIENVAULT_X_OPENCTI_SCORE_URL=80
+      - ALIENVAULT_X_OPENCTI_SCORE_MUTEX=60
+      - ALIENVAULT_X_OPENCTI_SCORE_CRYPTOCURRENCY_WALLET=80
+      - CONNECTOR_QUEUE_THRESHOLD=6000
     restart: always
-  connector-amitt:
-    image: opencti/connector-amitt:${OPENCTI_VERSION}
-    environment:
-      - OPENCTI_URL=${OPENCTI_URL}
-      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=4d015fce-38d2-429a-a815-66853edf4fc3
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
-      - CONNECTOR_NAME=AM!TT
-      - CONNECTOR_SCOPE=identity,attack-pattern,course-of-action,intrusion-set,malware,tool,report
-      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_LOG_LEVEL=info
-      - AMITT_FILE_URL=https://raw.githubusercontent.com/VVX7/cti/master/amitt-attack/amitt-attack.json
-      - PRE_AMITT_FILE_URL=https://raw.githubusercontent.com/VVX7/cti/master/amitt-pre-attack/amitt-pre-attack.json
-      - AMITT_INTERVAL=2 # In days, must be strictly greater than 1
-    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-chapsvision:
-    image: opencti/connector-chapsvision:${OPENCTI_VERSION}
+    image: opencti/connector-chapsvision:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=4886cf0d-881e-49a3-a663-2bfbca1f2134
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=d60fcc51-40af-463c-a5f9-1b330c344f40
       - CONNECTOR_NAME=Chapsvision
       - CONNECTOR_SCOPE=chapsvision
-      - CONNECTOR_CONFIDENCE_LEVEL=30 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_RUN_AND_TERMINATE=true
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_RUN_AND_TERMINATE=false
+      - CONNECTOR_LOG_LEVEL=error
       - CHAPSVISION_CERTIFICATE=Certificate_base64
       - CHAPSVISION_KEY=Key_base64
       - CHAPSVISION_QUERY_PARAMETER=_params
-      - CHAPSVISION_START_DATE=2022-01-01
+      - CHAPSVISION_START_DATE=2000-01-01
       - CHAPSVISION_INTERVAL=5 # In minutes
     restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-cisa-known-exploited-vulnerabilities:
-    image: opencti/connector-cisa-known-exploited-vulnerabilities:${OPENCTI_VERSION}
+    image: opencti/connector-cisa-known-exploited-vulnerabilities:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=3e34f428-6a1d-404e-bf05-2d7fdf6cef85
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=8ae094b7-4141-49ee-aefd-c8337ee0fd37
       - "CONNECTOR_NAME=CISA Known Exploited Vulnerabilities"
       - CONNECTOR_SCOPE=cisa
-      - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
       - CONNECTOR_RUN_AND_TERMINATE=false
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_LOG_LEVEL=error
+      - CONNECTOR_DURATION_PERIOD=P2D
       - CISA_CATALOG_URL=https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
       - CISA_CREATE_INFRASTRUCTURES=true
       - CISA_TLP=TLP:CLEAR
-      - CISA_INTERVAL=2 # In days, must be strictly greater than 1
     restart: always
-  connector-cryptolaemus:
-    image: opencti/connector-cryptolaemus:${OPENCTI_VERSION}
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-cpe:
+    image: opencti/connector-cpe:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=61250822-b3bf-409b-ba1b-b0a831347d66
+      - CONNECTOR_ID=da94db34-1718-44fe-929c-406e5c2385b6
       - CONNECTOR_TYPE=EXTERNAL_IMPORT
-      - CONNECTOR_NAME=Cryptolaemus
-      - CONNECTOR_SCOPE=cryptolaemus
-      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_NAME=Common Platform Enumeration
+      - CONNECTOR_SCOPE=software
       - CONNECTOR_LOG_LEVEL=info
+      - CPE_BASE_URL=https://services.nvd.nist.gov/rest/json/cpes/2.0
+      - NIST_API_KEY=${NVD_API} # Required
+      - CPE_INTERVAL=6h # Required, in hours advice min 6
     restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-cve:
-    image: opencti/connector-cve:${OPENCTI_VERSION}
+    image: opencti/connector-cve:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=77ab8eba-d788-4da2-9128-0e12e8d9d4d9
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=784477da-0a58-451a-a497-83094d463dcb
       - CONNECTOR_NAME=Common Vulnerabilities and Exposures
       - CONNECTOR_SCOPE=identity,vulnerability
-      - CONNECTOR_CONFIDENCE_LEVEL=75 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
       - CONNECTOR_RUN_AND_TERMINATE=false
-      - CONNECTOR_LOG_LEVEL=info
-      - CVE_IMPORT_HISTORY=true # Import history at the first run (after only recent), reset the connector state if you want to re-import
-      - CVE_NVD_DATA_FEED=https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-recent.json.gz
-      - CVE_HISTORY_START_YEAR=1999
-      - CVE_HISTORY_DATA_FEED=https://nvd.nist.gov/feeds/json/cve/1.1/
-      - CVE_INTERVAL=2 # In days, must be strictly greater than 1
+      - CONNECTOR_LOG_LEVEL=error
+      - CVE_BASE_URL=https://services.nvd.nist.gov/rest/json/cves
+      - CVE_API_KEY=${NVD_API} # Required
+      - CVE_INTERVAL=1 # Required, in hours advice min 2
+      - CVE_MAX_DATE_RANGE=120 # In days, max 120
+      - CVE_MAINTAIN_DATA=true # Required, retrieve only updated data
+      - CVE_PULL_HISTORY=true # If true, CVE_HISTORY_START_YEAR is required
+      - CVE_HISTORY_START_YEAR=1999 # Required if pull_history is True, min 2019 (see documentation CVE and CVSS base score V3.1)
     restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-cyber-campaign-collection:
-    image: opencti/connector-cyber-campaign-collection:${OPENCTI_VERSION}
+    image: opencti/connector-cyber-campaign-collection:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=5ba904e6-7d9c-4e2b-88f7-e71e591a48f0
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=4e102c93-27e8-421a-866e-5637e0ccf29a
       - "CONNECTOR_NAME=APT & Cybercriminals Campaign Collection"
       - CONNECTOR_SCOPE=report
-      - CONNECTOR_CONFIDENCE_LEVEL=0 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
       - CONNECTOR_RUN_AND_TERMINATE=false
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_LOG_LEVEL=error
       - CYBER_MONITOR_GITHUB_TOKEN= # If not provided, rate limit will be very low
-      - CYBER_MONITOR_FROM_YEAR=2008
+      - CYBER_MONITOR_FROM_YEAR=2000
       - CYBER_MONITOR_INTERVAL=2 # In days, must be strictly greater than 1
     restart: always
-  connector-cybercrimetracker:
-    image: opencti/connector-cybercrime-tracker:${OPENCTI_VERSION}
-    environment:
-      - OPENCTI_URL=${OPENCTI_URL}
-      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=5a5a73b8-1a53-4d61-9047-5241131aa150
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
-      - CONNECTOR_NAME=Cybercrime-Tracker
-      - CONNECTOR_SCOPE=cybercrime-tracker
-      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_LOG_LEVEL=info
-      - CYBERCRIME_TRACKER_FEED_URL=http://cybercrime-tracker.net/rss.xml
-      - CYBERCRIME_TRACKER_TLP=CLEAR
-      - CYBERCRIME_TRACKER_INTERVAL=3600
-      - CYBERCRIME_TRACKER_CREATE_INDICATORS=true
-      - CYBERCRIME_TRACKER_CREATE_OBSERVABLES=true
-    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-disarm-framework:
-    image: opencti/connector-disarm-framework:${OPENCTI_VERSION}
+    image: opencti/connector-disarm-framework:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=9226fafe-0108-4509-8e7d-6071b12ae993
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=9ddc7ee7-1b31-4734-8e4a-9a8c4db98b84
       - "CONNECTOR_NAME=DISARM Framework"
       - CONNECTOR_SCOPE=marking-definition,identity,attack-pattern,course-of-action,intrusion-set,campaign,malware,tool,report,narrative,event,channel
-      - CONNECTOR_CONFIDENCE_LEVEL=75 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_RUN_AND_TERMINATE=true
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_RUN_AND_TERMINATE=false
+      - CONNECTOR_LOG_LEVEL=error
       - DISARM_FRAMEWORK_URL=https://raw.githubusercontent.com/DISARMFoundation/DISARMframeworks/main/generated_files/DISARM_STIX/DISARM.json
       - DISARM_FRAMEWORK_INTERVAL=2 # In days, must be strictly greater than 1
-  connector-maltiverse:
-    image: opencti/connector-maltiverse:${OPENCTI_VERSION}
-    environment:
-      - OPENCTI_URL=${OPENCTI_URL}
-      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=e4d0e7df-57fa-405a-8c7b-f2ab428731e9
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
-      - CONNECTOR_NAME=MALTIVERSE
-      - CONNECTOR_SCOPE=ipv4-addr,ipv6-addr,vulnerability,domain,url,file-sha256,file-md5,file-sha1 # MIME type or Stix Object
-      - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
-      - MALTIVERSE_USER=selbyclebert@gmail.com # Username from Maltiverse
-      - MALTIVERSE_PASSWD=XGfUnQr68qMbMHW # PAssword for the user provided
-      - MALTIVERSE_FEEDS=All # Your feeds selection between commas
-      - MALTIVERSE_POLL_INTERVAL=4 # in hours!
     restart: always
-  connector-malware-bazaar-recent-additions:
-    image: opencti/connector-malwarebazaar-recent-additions:${OPENCTI_VERSION}
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-greynoise-feed:
+    image: opencti/connector-greynoise-feed:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=3161aeae-cf46-4798-9e56-d48013e52537
+      - CONNECTOR_ID=73e2d485-c8a8-4a83-a5cc-4b097fcaca77 # Valid UUIDv4
       - CONNECTOR_TYPE=EXTERNAL_IMPORT
-      - "CONNECTOR_NAME=MalwareBazaar Recent Additions"
-      - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=TRUE
+      - CONNECTOR_NAME=GreyNoiseFeed
+      - CONNECTOR_SCOPE=greynoisefeed
       - CONNECTOR_LOG_LEVEL=info
+      - GREYNOISE_API_KEY=${GREYNOISE_API}
+      - GREYNOISE_FEED_TYPE=malicious
+      - GREYNOISE_INDICATOR_SCORE_MALICIOUS=75
+      - GREYNOISE_INDICATOR_SCORE_BENIGN=20
+      - "GREYNOISE_NAME=GreyNoise Feed"
+      - "GREYNOISE_DESCRIPTION=GreyNoise collects and analyzes untargeted, widespread, and opportunistic scan and attack activity that reaches every server directly connected to the Internet."
+      - GREYNOISE_LIMIT=100000
+      - GREYNOISE_IMPORT_METADATA=false
+      - GREYNOISE_INTERVAL=1 # In hours (the connector will always pull last 2 days each run)
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-malpedia:
+    image: opencti/connector-malpedia:6.4.1
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=b9d88f1e-25d0-4210-b671-da96470c71ab
+      - CONNECTOR_NAME=Malpedia
+      - CONNECTOR_SCOPE=malpedia
+      - CONNECTOR_LOG_LEVEL=error
+      - CONNECTOR_EXPOSE_METRICS=false
+      - "MALPEDIA_AUTH_KEY= # Empty key only fetches TLP:WHITE information"
+      - MALPEDIA_INTERVAL_SEC=3600 # Run once every day
+      - MALPEDIA_IMPORT_INTRUSION_SETS=true
+      - MALPEDIA_IMPORT_YARA=true
+      - MALPEDIA_CREATE_INDICATORS=true
+      - MALPEDIA_CREATE_OBSERVABLES=true
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-malwarebazaar-recent-additions:
+    image: opencti/connector-malwarebazaar-recent-additions:6.4.1
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=aa2c4b4c-bad7-48d0-bd17-401c589ae70b
+      - "CONNECTOR_NAME=MalwareBazaar Recent Additions"
+      - CONNECTOR_LOG_LEVEL=error
       - MALWAREBAZAAR_RECENT_ADDITIONS_API_URL=https://mb-api.abuse.ch/api/v1/
       - MALWAREBAZAAR_RECENT_ADDITIONS_COOLDOWN_SECONDS=300 # Time to wait in seconds between subsequent requests
       - MALWAREBAZAAR_RECENT_ADDITIONS_INCLUDE_TAGS=exe,dll,docm,docx,doc,xls,xlsx,xlsm,js # (Optional) Only download files if any tag matches. (Comma separated)
       - MALWAREBAZAAR_RECENT_ADDITIONS_INCLUDE_REPORTERS= # (Optional) Only download files uploaded by these reporters. (Comma separated)
-      - MALWAREBAZAAR_RECENT_ADDITIONS_LABELS=malware-bazar # (Optional) Labels to apply to uploaded Artifacts. (Comma separated)
+      - MALWAREBAZAAR_RECENT_ADDITIONS_LABELS=malware-bazaar # (Optional) Labels to apply to uploaded Artifacts. (Comma separated)
       - MALWAREBAZAAR_RECENT_ADDITIONS_LABELS_COLOR=#54483b # Color to use for labels
     restart: always
-  connector-mitre:
-    image: opencti/connector-mitre:${OPENCTI_VERSION}
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-mitre-atlas:
+    image: opencti/connector-mitre-atlas:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=a39c599d-f4fb-4f2e-b749-1fd7f3a58842
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=e82c9f03-e0c4-430f-9882-95f1cfaec84e
+      - "CONNECTOR_NAME=MITRE ATLAS"
+      - CONNECTOR_SCOPE=identity,attack-pattern,course-of-action,relationship,x-mitre-collection,x-mitre-matrix,x-mitre-tactic
+      - CONNECTOR_CONFIDENCE_LEVEL=75 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_RUN_AND_TERMINATE=false
+      - CONNECTOR_LOG_LEVEL=error
+      - MITRE_ATLAS_URL=https://raw.githubusercontent.com/mitre-atlas/atlas-navigator-data/main/dist/stix-atlas.json
+      - MITRE_ATLAS_INTERVAL=2 # In days, must be strictly greater than 1
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-mitre:
+    image: opencti/connector-mitre:6.4.1
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=358ab394-7496-494d-b040-52d64b69de63
       - "CONNECTOR_NAME=MITRE Datasets"
       - CONNECTOR_SCOPE=tool,report,malware,identity,campaign,intrusion-set,attack-pattern,course-of-action,x-mitre-data-source,x-mitre-data-component,x-mitre-matrix,x-mitre-tactic,x-mitre-collection
-      - CONNECTOR_CONFIDENCE_LEVEL=75
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_RUN_AND_TERMINATE=true
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_RUN_AND_TERMINATE=false
+      - CONNECTOR_LOG_LEVEL=error
+      - MITRE_REMOVE_STATEMENT_MARKING=true
       - MITRE_INTERVAL=2 # In days
     restart: always
-  connector-urlhaus-recent-payloads:
-    image: opencti/connector-urlhaus-recent-payloads:${OPENCTI_VERSION}
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-phishunt:
+    image: opencti/connector-phishunt:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=d6ea9305-0684-4db8-a620-e55e5ad51e51
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
-      - "CONNECTOR_NAME=URLHaus Recent Payloads"
-      - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_ID=903a2c73-4748-4010-9f79-2ff07bc2b1d5
+      - CONNECTOR_NAME=Phishunt
+      - CONNECTOR_SCOPE=phishunt
+      - CONNECTOR_CONFIDENCE_LEVEL=40 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_LOG_LEVEL=error
+      - PHISHUNT_API_KEY= # Optional, if not provided, consume only https://phishunt.io/feed.txt
+      - PHISHUNT_CREATE_INDICATORS=true
+      - PHISHUNT_DEFAULT_X_OPENCTI_SCORE=40 # Optional: default is 40
+      - PHISHUNT_X_OPENCTI_SCORE_DOMAIN=40 # Optional
+      - PHISHUNT_X_OPENCTI_SCORE_IP=40 # Optional
+      - PHISHUNT_X_OPENCTI_SCORE_URL=60 # Optional
+      - PHISHUNT_INTERVAL=2 # In days, must be strictly greater than 1
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-ransomware:
+    image: opencti/connector-ransomwarelive:6.4.1
+    container_name: ransomware-connector
+    environment:
+      # Connector's definition parameters:
+      - CONNECTOR_NAME=Ransomware Connector
+      - CONNECTOR_SCOPE=identity,attack-pattern,course-of-action,intrusion-set,malware,tool,report
+      # Connector's generic execution parameters:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN} #generate user token
+      - CONNECTOR_ID=79ec0b54-0b56-4c7f-b2eb-99dd1e9b2b6f #Valid UUIDv4 tokem
+      - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted).
+      - CONNECTOR_LOG_LEVEL=info # Log level: debug, info, warn, error
       - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_PULL_HISTORY=true # If true, the connector will pull the history of the data. But it is not recommended to set it to true as there will a large influx of data.
+      - CONNECTOR_HISTORY_START_YEAR=2020 # Data only goes back till 2020
+      - CONNECTOR_RUN_EVERY=10m # 10 minutes will be the ideal time
+      # Connector's custom execution parameters:
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-redflag-domains:
+    image: opencti/connector-red-flag-domains:6.4.1
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=7236bc06-88f6-4b3d-8c3a-8dd29ff395d0
+      - "CONNECTOR_NAME=Red Flag Domains"
+      - CONNECTOR_SCOPE=red-flag-domains
+      - CONNECTOR_CONFIDENCE_LEVEL=70
+      - UPDATE_EXISTING_DATA=False
       - CONNECTOR_LOG_LEVEL=info
+      - REDFLAGDOMAINS_URL=https://dl.red.flag.domains/daily/
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-stopforumspam:
+    image: opencti/connector-stopforumspam:6.4.1
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=e9adc479-7716-4d1e-affd-0b5459634570
+      - CONNECTOR_NAME=Stopforumspam
+      - CONNECTOR_SCOPE=stopforumspam
+      - CONNECTOR_CONFIDENCE_LEVEL=60 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_LOG_LEVEL=error
+      - STOPFORUMSPAM_URL=https://www.stopforumspam.com/downloads/toxic_domains_whole_filtered_50000.txt
+      - STOPFORUMSPAM_CREATE_INDICATORS=true
+      - STOPFORUMSPAM_INTERVAL=2 # In days, must be strictly greater than 1
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-tweetfeed:
+    image: opencti/connector-tweetfeed:6.4.1
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=16eed6df-eb02-4b41-8873-b3c97f9cf9f5
+      - CONNECTOR_NAME=Tweetfeed
+      - CONNECTOR_SCOPE=tweetfeed
+      - CONNECTOR_CONFIDENCE_LEVEL=15
+      - CONNECTOR_LOG_LEVEL=error
+      - TWEETFEED_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
+      - TWEETFEED_CREATE_INDICATORS=true
+      - TWEETFEED_CREATE_OBSERVABLES=true
+      - TWEETFEED_INTERVAL=1
+      - TWEETFEED_UPDATE_EXISTING_DATA=true
+      - "TWEETFEED_ORG_DESCRIPTION=Tweetfeed, a connector to import IOC from Twitter."
+      - TWEETFEED_ORG_NAME=Tweetfeed
+      - TWEETFEED_DAYS_BACK_IN_TIME=365 # Number of days to retrieve data back in time
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-urlhaus-recent-payloads:
+    image: opencti/connector-urlhaus-recent-payloads:6.4.1
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=976b2e2e-f7e8-4e81-a0e5-d7543b0ba479
+      - "CONNECTOR_NAME=URLhaus Recent Payloads"
+      - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_LOG_LEVEL=error
       - URLHAUS_RECENT_PAYLOADS_API_URL=https://urlhaus-api.abuse.ch/v1/
       - URLHAUS_RECENT_PAYLOADS_COOLDOWN_SECONDS=300 # Time to wait in seconds between subsequent requests
       - URLHAUS_RECENT_PAYLOADS_INCLUDE_FILETYPES=exe,dll,docm,docx,doc,xls,xlsx,xlsm,js,xll # (Optional) Only download files if any tag matches. (Comma separated)
@@ -447,181 +635,195 @@ services:
       - URLHAUS_RECENT_PAYLOADS_SIGNATURE_LABEL_COLOR=#0059f7 # Color for Yara rule match label
       - URLHAUS_RECENT_PAYLOADS_FILETYPE_LABEL_COLOR=#54483b # Color to use for filetype label
     restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-urlhaus:
-    image: opencti/connector-urlhaus:${OPENCTI_VERSION}
+    image: opencti/connector-urlhaus:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=aadef886-029e-4ce7-b744-f54c9899cafb
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=2817c6c2-4fbf-4f82-b18a-a4bad448adae
       - "CONNECTOR_NAME=Abuse.ch URLhaus"
       - CONNECTOR_SCOPE=urlhaus
       - CONNECTOR_CONFIDENCE_LEVEL=40 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_LOG_LEVEL=error
       - URLHAUS_CSV_URL=https://urlhaus.abuse.ch/downloads/csv_recent/
+      - URLHAUS_DEFAULT_X_OPENCTI_SCORE=80  # Optional: Defaults to 80.
       - URLHAUS_IMPORT_OFFLINE=true
-      - URLHAUS_CREATE_INDICATORS=true
       - URLHAUS_THREATS_FROM_LABELS=true
       - URLHAUS_INTERVAL=2 # In days, must be strictly greater than 1
     restart: always
-  connector-valhalla:
-    image: opencti/connector-valhalla:${OPENCTI_VERSION}
-    environment:
-      - OPENCTI_URL=${OPENCTI_URL}
-      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=9aedf690-2851-41dd-b1fa-d99f28401713
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
-      - CONNECTOR_NAME=Valhalla
-      - CONNECTOR_SCOPE=valhalla
-      - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=false
-      - CONNECTOR_LOG_LEVEL=info
-      - VALHALLA_API_KEY= # Empty key only fetches public/demo information
-      - VALHALLA_INTERVAL_SEC=3600# Run once every day
-    restart: always
-  connector-virustotal-livehunt-notifications:
-    image: opencti/connector-virustotal-livehunt-notifications:${OPENCTI_VERSION}
-    environment:
-      - OPENCTI_URL=${OPENCTI_URL}
-      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=Virustotal_Livehunt_Notifications
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
-      - "CONNECTOR_NAME=Virustotal Livehunt Notifications"
-      - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_LOG_LEVEL=info
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_API_KEY=${VIRUSTOTAL_API_KEY} # Private API Key
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_COOLDOWN_SECONDS=300 # Time to wait in seconds between subsequent requests
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_RULENAME_COLOR=#0059f7 # Color to use for Yara rule name labels
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_LABELS_COLOR=#54483b # Color to use for all other labels
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_EXTENSIONS=exe,dll # (Optional) Comma separated filter to only download files matching these extensions
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_MIN_FILE_SIZE=1000 # (Optional) Don't download files smaller than this many bytes
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_MAX_FILE_SIZE=52428800 # (Optional) Don't download files larger than this many bytes
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_MAX_AGE=1 # (Optional) Don't download files older than this many days (first seen in VT)
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_MIN_POSITIVES=5 # (Optional) Don't download files with less than this many vendors marking malicious
-      - VIRUSTOTAL_LIVEHUNT_NOTIFICATIONS_LABELS=livehunt # (Optional) Comma separated labels to apply for uploaded files
-    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-vxvault:
-    image: opencti/connector-vxvault:${OPENCTI_VERSION}
+    image: opencti/connector-vxvault:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://opencti:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=399ea1b7-e0db-4c50-a94b-9c03274f4e4a
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
+      - CONNECTOR_ID=9b4abf72-77d4-406e-849f-b72b9a2d3b7c
       - "CONNECTOR_NAME=VX Vault URL list"
       - CONNECTOR_SCOPE=vxvault
-      - CONNECTOR_CONFIDENCE_LEVEL=40 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_LOG_LEVEL=info
-      - VXVAULT_URL=http://vxvault.net/URL_List.php
+      - CONNECTOR_LOG_LEVEL=error
+      - VXVAULT_URL=https://vxvault.net/URL_List.php
       - VXVAULT_CREATE_INDICATORS=true
       - VXVAULT_INTERVAL=2 # In days, must be strictly greater than 1
+      - VXVAULT_SSL_VERIFY=False
     restart: always
-  connector-abuseipdb-enrich:
-    image: opencti/connector-abuseipdb:${OPENCTI_VERSION}
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-abuseipdb:
+    image: opencti/connector-abuseipdb:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://localhost:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=5a20742c-cd0f-4d78-a9b6-f10150796dfc
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
+      - CONNECTOR_ID=72b59590-a10d-4608-b781-24363a6acd59
       - CONNECTOR_NAME=AbuseIPDB
       - CONNECTOR_SCOPE=IPv4-Addr
       - CONNECTOR_AUTO=true
       - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
-      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY}
+      - CONNECTOR_LOG_LEVEL=error
+      - ABUSEIPDB_API_KEY=${ABUSE_API_KEY}
       - ABUSEIPDB_MAX_TLP=TLP:AMBER
     restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-crowdsec:
-    image: opencti/connector-crowdsec:${OPENCTI_VERSION}
+    image: opencti/connector-crowdsec:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
-      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=5081043e-20ca-46d6-8576-d55eb17748d3
+      - OPENCTI_URL=http://opencti:8080 # OpenCTI API URL
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN} # Add OpenCTI API token here
+      - CONNECTOR_ID=0e9cf639-9c4f-452d-a3c3-f0e5737028f5 # Add CrowdSec connector ID (any valid UUID v4)
       - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
-      - CONNECTOR_NAME=crowdsec
-      - CONNECTOR_SCOPE=IPv4-Addr # MIME type or Stix Object
+      - CONNECTOR_SCOPE=IPv4-Addr,IPv6-Addr # MIME type or Stix Object
       - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_LOG_LEVEL=error
+      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      - CONNECTOR_NAME=CrowdSec
+      - CROWDSEC_KEY=${CROWDSEC_API_KEY} # Add CrowdSec's CTI API Key
+      - CROWDSEC_API_VERSION=v2 #v2 is the only supported version for now
     restart: always
-  connector-greynoise:
-    image: opencti/connector-greynoise:${OPENCTI_VERSION}
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-dnstwist:
+    image: opencti/connector-dnstwist:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - CONNECTOR_NAME=DNS_TWISTER
+      - CONNECTOR_SCOPE=Domain-Name
+      # Connector's generic execution parameters:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN} ## connector token
+      - CONNECTOR_ID=573262dd-22f2-439d-a580-3bff4f6b81b3 # UUID of the connector
+      - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted).
+      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_AUTO=false # don't run the connector automatically, you will flood your opencti instance
+      - CONNECTOR_FETCH_REGISTERED=true # takes true or false; gives the ability to control the dnstwister domain selection
+      - CONNECTOR_DNS_TWIST_THREADS=10 #number of threads to use for dnstwist; default is 20
+      - CONNECTOR_UPDATE_EXISTING_DATA=true
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-first-epss:
+    image: opencti/connector-first-epss:6.4.1
+    environment:
+      - OPENCTI_URL=http://localhost:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=11776489-8ce1-4ef2-b8cc-906a0d83f8ea
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
-      - CONNECTOR_NAME=GreyNoise
-      - CONNECTOR_SCOPE=IPv4-Addr
+      # Connector's definition parameters REQUIRED
+      - CONNECTOR_ID=403bccd5-5392-4661-995d-a3b216589931
+      - "CONNECTOR_NAME=FIRST EPSS"
+      - CONNECTOR_SCOPE=vulnerability
+      - CONNECTOR_LOG_LEVEL=error
       - CONNECTOR_AUTO=true
-      - CONNECTOR_CONFIDENCE_LEVEL=80 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
-      - GREYNOISE_KEY=${GREYNOISE_API_KEY}
-      - GREYNOISE_MAX_TLP=TLP:AMBER
-      - "GREYNOISE_NAME=GreyNoise sensors"
-      - "GREYNOISE_DESCRIPTION=GreyNoise collects and analyzes untargeted, widespread, and opportunistic scan and attack activity that reaches every server directly connected to the Internet."
-      - GREYNOISE_SIGHTING_NOT_SEEN=false
-      - GREYNOISE_SPOOFABLE_CONFIDENCE_LEVEL=30
+      - FIRST_EPSS_API_BASE_URL=https://api.first.org/data/v1/epss
+      - FIRST_EPSS_MAX_TLP=TLP:CLEAR # Available values: TLP:CLEAR, TLP:WHITE, TLP:GREEN, TLP:AMBER, TLP:AMBER+STRICT, TLP:RED
     restart: always
-  connector-hygiene:
-    image: opencti/connector-hygiene:${OPENCTI_VERSION}
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-google-dns:
+    image: opencti/connector-google-dns:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://localhost:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=28599f4a-2ce9-4a19-9edc-354f1e093618
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
+      - CONNECTOR_ID=e51d3fe9-0c6d-4af6-b9c8-e0d3b695e74d
+      - CONNECTOR_NAME=Google DNS
+      - CONNECTOR_SCOPE=Domain-Name,Hostname # MIME type or Stix Object
+      - CONNECTOR_AUTO=true
+      - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_LOG_LEVEL=error
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-greynoise-vuln:
+    image: opencti/connector-greynoise-vuln:6.4.1
+    environment:
+      - OPENCTI_URL=http://localhost:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=929dc62f-5dc3-4a49-b8dc-80c24f4bc049
+      - CONNECTOR_NAME=GreyNoise
+      - CONNECTOR_SCOPE=vulnerability
+      - CONNECTOR_AUTO=true
+      - CONNECTOR_LOG_LEVEL=error
+      - GREYNOISE_KEY=${GREYNOISE_API}
+      - GREYNOISE_MAX_TLP=TLP:AMBER
+      - "GREYNOISE_NAME=GreyNoise Internet Scanner"
+      - "GREYNOISE_DESCRIPTION=GreyNoise collects and analyzes opportunistic scan and attack activity for devices connected directly to the Internet."
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-hygiene:
+    image: opencti/connector-hygiene:6.4.1
+    environment:
+      - OPENCTI_URL=http://localhost:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=35f8b5b9-e7a8-4ced-8c06-19e984ffde2d
       - CONNECTOR_NAME=Hygiene
       - CONNECTOR_SCOPE=IPv4-Addr,IPv6-Addr,Domain-Name,StixFile,Artifact
       - CONNECTOR_AUTO=true
       - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
-      - HYGIENE_WARNINGLISTS_SLOW_SEARCH=true # Enable warning lists slow search mode
-      - HYGIENE_ENRICH_SUBDOMAINS=true # Enrich subdomains with hygiene_parent label if the parents are found in warninglists
+      - CONNECTOR_LOG_LEVEL=error
+      - HYGIENE_WARNINGLISTS_SLOW_SEARCH=false # Enable warning lists slow search mode
+      - HYGIENE_ENRICH_SUBDOMAINS=false # Enrich subdomains with hygiene_parent label if the parents are found in warninglists
     restart: always
-  connector-import-:
-    image: opencti/connector-import-external-reference:${OPENCTI_VERSION}
-    environment:
-      - OPENCTI_URL=${OPENCTI_URL}
-      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=bfa49c81-337d-44c8-81ea-22db70a584e6
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
-      - CONNECTOR_NAME=ImportExternalReference
-      - CONNECTOR_SCOPE=External-Reference
-      - CONNECTOR_AUTO=TRUE # Enable/disable auto-import of external references
-      - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
-      - IMPORT_EXTERNAL_REFERENCE_IMPORT_AS_PDF=true # Import as PDF file
-      - IMPORT_EXTERNAL_REFERENCE_IMPORT_AS_MD=true # Import as MarkDown file
-      - IMPORT_EXTERNAL_REFERENCE_IMPORT_PDF_AS_MD=true # If import_as_md is true, try to convert PDF as Markdown
-    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-ipinfo:
-    image: opencti/connector-ipinfo:${OPENCTI_VERSION}
+    image: opencti/connector-ipinfo:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://localhost:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=0efdc327-80de-4f37-a796-d647f28a3775
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
+      - CONNECTOR_ID=9d6acd6d-7b9e-414a-ac59-bae8240a5811
       - CONNECTOR_NAME=IpInfo
-      - CONNECTOR_SCOPE=IPv4-Addr
+      - CONNECTOR_SCOPE=IPv4-Addr,IPv6-Addr
       - CONNECTOR_AUTO=true
       - CONNECTOR_CONFIDENCE_LEVEL=75 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
-      - IPINFO_TOKEN=0f4dd0a7cd8091
+      - CONNECTOR_LOG_LEVEL=error
+      - IPINFO_TOKEN=${IPINFO_API_KEY}
       - IPINFO_MAX_TLP=TLP:AMBER
+      - IPINFO_USE_ASN_NAME=true      # Set false if you want ASN name to be just the number e.g. AS8075
     restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-ipqs:
-    image: opencti/connector-ipqs:${OPENCTI_VERSION}
+    image: opencti/connector-ipqs:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://localhost:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=b54de34a-2d5f-4e2b-84f1-b9e0435894bb
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
+      - CONNECTOR_ID=9b2f117d-8ab4-4b5c-af7b-e4cdcfcf6486
       - CONNECTOR_NAME=IPQS Fraud and Risk Scoring
       - CONNECTOR_SCOPE=Domain-Name,IPv4-Addr,Email-Addr,Url,Phone-Number
       - CONNECTOR_AUTO=true
       - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_LOG_LEVEL=error
       - IPQS_PRIVATE_KEY=${IPQS_PRIVATE_KEY}
       - IPQS_BASE_URL=https://ipqualityscore.com/api/json
       # IP specific config settings
@@ -629,86 +831,104 @@ services:
       # Domain specific config settings
       - IPQS_DOMAIN_ADD_RELATIONSHIPS=true # Whether or not to add IP resolution relationships
     restart: always
-  connector-ivre:
-    image: opencti/connector-ivre:${OPENCTI_VERSION}
-    environment:
-      - OPENCTI_URL=${OPENCTI_URL}
-      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=f82a8e7a-141f-4bf4-a3d0-903bed6e7684
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
-      - CONNECTOR_NAME=ivre
-      - CONNECTOR_SCOPE=autonomous-system,domain-name,ipv4-addr,ipv6-addr,mac-addr,x509-certificate
-      - CONNECTOR_AUTO=true
-      - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
-      - IVRE_MAX_TLP=TLP:AMBER
-    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-shodan-internetdb:
-    image: opencti/connector-shodan-internetdb:${OPENCTI_VERSION}
+    image: opencti/connector-shodan-internetdb:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://localhost:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=2691c0c0-c345-42c5-a1a7-83dd9f39c553
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
+      - CONNECTOR_ID=7a63de74-83ce-46a5-87c7-25960114b9c7
       - CONNECTOR_NAME=Shodan InternetDB
       - CONNECTOR_SCOPE=IPv4-Addr
-      - CONNECTOR_CONFIDENCE_LEVEL=75
       - CONNECTOR_AUTO=true
-      - CONNECTOR_LOG_LEVEL=info
-      - SHODAN_MAX_TLP=white
+      - CONNECTOR_LOG_LEVEL=error
+      - SHODAN_MAX_TLP=TLP:CLEAR
       - SHODAN_SSL_VERIFY=true
     restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
   connector-shodan:
-    image: opencti/connector-shodan:${OPENCTI_VERSION}
+    image: opencti/connector-shodan:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://localhost:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=d12fb3a9-dcd5-4018-92e1-a3cda44b405c
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
+      - CONNECTOR_ID=0936be10-d245-49da-aff1-0160392730eb
       - CONNECTOR_NAME=Shodan
-      - CONNECTOR_SCOPE=IPv4-Addr
+      - CONNECTOR_SCOPE=IPv4-Addr,Indicator
       - CONNECTOR_AUTO=true
-      - CONNECTOR_CONFIDENCE_LEVEL=75 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
-      - SHODAN_TOKEN=${SHODAN_API_KEY}
+      - CONNECTOR_LOG_LEVEL=error
+      - SHODAN_TOKEN=${SHODAN_TOKEN}
       - SHODAN_MAX_TLP=TLP:AMBER
-      - SHODAN_CREATE_INDICATORS=true
+      - SHODAN_DEFAULT_SCORE=50
+      - SHODAN_IMPORT_SEARCH_RESULTS=true
+      - SHODAN_CREATE_NOTE=true # Add results to note rather than description
     restart: always
-  connector-virustotal-downloader:
-    image: opencti/connector-virustotal-downloader:${OPENCTI_VERSION}
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-urlscan-enrichment:
+    image: opencti/connector-urlscan-enrichment:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      # OpenCTI's generic execution parameters:
+      - OPENCTI_URL=http://localhost:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=d14ed68e-4580-45aa-a7f9-329b39e6d4ef
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
+      # Connector's generic execution parameters:
+      - CONNECTOR_ID=aba9355e-a273-476a-983b-3928d7df354d
+      - CONNECTOR_NAME=Urlscan
+      - CONNECTOR_SCOPE=url,ipv4-addr,ipv6-addr
+      - CONNECTOR_AUTO=true
+      - CONNECTOR_LOG_LEVEL=error
+      # Connector's custom execution parameters:
+      - URLSCAN_ENRICHMENT_API_KEY=${URLSCAN_ENRICHMENT_API_KEY}
+      - URLSCAN_ENRICHMENT_API_BASE_URL=https://urlscan.io/api/v1/
+      - URLSCAN_ENRICHMENT_IMPORT_SCREENSHOT=true
+      - URLSCAN_ENRICHMENT_VISIBILITY=public # Available values : public, unlisted, private
+      - URLSCAN_ENRICHMENT_SEARCH_FILTERED_BY_DATE=>now-1y # Available : ">now-1h", ">now-1d", ">now-1y", "[2022 TO 2023]", "[2022/01/01 TO 2023/12/01]"
+      - URLSCAN_ENRICHMENT_MAX_TLP=TLP:AMBER # Required, Available values: TLP:CLEAR, TLP:WHITE, TLP:GREEN, TLP:AMBER, TLP:AMBER+STRICT, TLP:RED
+    restart: always
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-virustotal-downloader:
+    image: opencti/connector-virustotal-downloader:6.4.1
+    environment:
+      - OPENCTI_URL=http://localhost:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=07024e4b-6377-4af0-8c0f-b8b272daf8af
       - "CONNECTOR_NAME=VirusTotal Downloader"
       - CONNECTOR_SCOPE=StixFile
       - CONNECTOR_AUTO=true # Enable/disable auto-enrichment of observables
       - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
-      - VIRUSTOTAL_DOWNLOADER_API_KEY=${VIRUSTOTAL_API_KEY}
+      - CONNECTOR_LOG_LEVEL=error
+      - VIRUSTOTAL_DOWNLOADER_API_KEY=ChangeMe
     restart: always
-  connector-virustotal-enrichment:
-    image: opencti/connector-virustotal:${OPENCTI_VERSION}
+    depends_on:
+      opencti:
+        condition: service_healthy
+  connector-virustotal:
+    image: opencti/connector-virustotal:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_URL=http://localhost:8080
       - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=1d82e11d-c913-41ba-a884-82a12d32759c
-      - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
+      - CONNECTOR_ID=ChangeMe
       - CONNECTOR_NAME=VirusTotal
-      - CONNECTOR_SCOPE=StixFile,Artifact,IPv4-Addr,Domain-Name,Url
+      - CONNECTOR_SCOPE=StixFile,Artifact,IPv4-Addr,Domain-Name,Url,Hostname
       - CONNECTOR_AUTO=true # Enable/disable auto-enrichment of observables
-      - CONNECTOR_CONFIDENCE_LEVEL=50 # From 0 (Unknown) to 100 (Fully trusted)
-      - CONNECTOR_LOG_LEVEL=info
-      - VIRUSTOTAL_TOKEN=${VIRUSTOTAL_API_KEY}
+      - CONNECTOR_LOG_LEVEL=error
+      - CONNECTOR_EXPOSE_METRICS=false
+      - VIRUSTOTAL_TOKEN=ChangeMe
       - VIRUSTOTAL_MAX_TLP=TLP:AMBER
-      - VIRUSTOTAL_REPLACE_WITH_LOWER_SCORE=false # Whether to keep the higher of the VT or existing score (false) or force the score to be updated with the VT score even if its lower than existing score (true).
+      - VIRUSTOTAL_REPLACE_WITH_LOWER_SCORE=true # Whether to keep the higher of the VT or existing score (false) or force the score to be updated with the VT score even if its lower than existing score (true).
       # File/Artifact specific config settings
       - VIRUSTOTAL_FILE_CREATE_NOTE_FULL_REPORT=true # Whether or not to include the full report as a Note
-      - VIRUSTOTAL_FILE_UPLOAD_UNSEEN_ARTIFACTS=false # Whether to upload artifacts (smaller than 32MB) that VirusTotal has no record of
+      - VIRUSTOTAL_FILE_UPLOAD_UNSEEN_ARTIFACTS=true # Whether to upload artifacts (smaller than 32MB) that VirusTotal has no record of
       - VIRUSTOTAL_FILE_INDICATOR_CREATE_POSITIVES=10 # Create an indicator for File/Artifact based observables once this positive theshold is reached. Note: specify 0 to disable indicator creation
       - VIRUSTOTAL_FILE_INDICATOR_VALID_MINUTES=2880 # How long the indicator is valid for in minutes
       - VIRUSTOTAL_FILE_INDICATOR_DETECT=true # Whether or not to set detection for the indicator to true
+      - VIRUSTOTAL_FILE_IMPORT_YARA=true # Whether or not import Crowdsourced YARA rules
       # IP specific config settings
       - VIRUSTOTAL_IP_INDICATOR_CREATE_POSITIVES=10 # Create an indicator for IPv4 based observables once this positive theshold is reached. Note: specify 0 to disable indicator creation
       - VIRUSTOTAL_IP_INDICATOR_VALID_MINUTES=2880 # How long the indicator is valid for in minutes
@@ -720,7 +940,7 @@ services:
       - VIRUSTOTAL_DOMAIN_INDICATOR_DETECT=true # Whether or not to set detection for the indicator to true
       - VIRUSTOTAL_DOMAIN_ADD_RELATIONSHIPS=true # Whether or not to add IP resolution relationships
       # URL specific config settings
-      - VIRUSTOTAL_URL_UPLOAD_UNSEEN=false # Whether to upload URLs that VirusTotal has no record of for analysis
+      - VIRUSTOTAL_URL_UPLOAD_UNSEEN=true # Whether to upload URLs that VirusTotal has no record of for analysis
       - VIRUSTOTAL_URL_INDICATOR_CREATE_POSITIVES=10 # Create an indicator for Url based observables once this positive theshold is reached. Note: specify 0 to disable indicator creation
       - VIRUSTOTAL_URL_INDICATOR_VALID_MINUTES=2880 # How long the indicator is valid for in minutes
       - VIRUSTOTAL_URL_INDICATOR_DETECT=true # Whether or not to set detection for the indicator to true
@@ -728,22 +948,105 @@ services:
       mode: replicated
       replicas: 1
     restart: always
-  connector-opencti-connector:
-    image: opencti/connector-opencti:${OPENCTI_VERSION}
+    depends_on:
+     opencti:
+      condition: service_healthy
+  connector-abuseipdb-enrichment:
+    image: opencti/connector-abuseipdb:6.4.1
     environment:
-      - OPENCTI_URL=${OPENCTI_URL}
-      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
-      - CONNECTOR_ID=0093711d-941c-422c-bfc2-236b2c177da8
-      - CONNECTOR_TYPE=EXTERNAL_IMPORT
-      - "CONNECTOR_NAME=OpenCTI Datasets"
-      - CONNECTOR_SCOPE=marking-definition,identity,location
-      - CONNECTOR_CONFIDENCE_LEVEL=90
-      - CONNECTOR_UPDATE_EXISTING_DATA=true
-      - CONNECTOR_RUN_AND_TERMINATE=false
-      - CONNECTOR_LOG_LEVEL=info
-      - CONFIG_INTERVAL=2 # In days
-      - CONFIG_REMOVE_CREATOR=false
+          - OPENCTI_URL=http://localhost:8080
+          - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+          - CONNECTOR_ID=9c5cd78e-8068-4a2a-9f50-b7d4deac75d3
+          - CONNECTOR_NAME=AbuseIPDB
+          - CONNECTOR_SCOPE=IPv4-Addr
+          - CONNECTOR_AUTO=true
+          - CONNECTOR_CONFIDENCE_LEVEL=15 # From 0 (Unknown) to 100 (Fully trusted)
+          - CONNECTOR_LOG_LEVEL=error
+          - ABUSEIPDB_API_KEY=${ABUSE_API_KEY}
+          - ABUSEIPDB_MAX_TLP=TLP:AMBER
     restart: always
+  connector-attribution-tools:
+    image: opencti/connector-attribution-tools:6.4.1
+    environment:
+            - OPENCTI_URL=http://localhost:8080
+            - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+            - CONNECTOR_ID=8d05b314-16c3-427d-850f-5408d2670354
+            - CONNECTOR_NAME=attribution-tools
+            - CONNECTOR_SCOPE=Incident
+            - CONNECTOR_AUTO=true
+            - CONNECTOR_CONFIDENCE_LEVEL=3
+            - CONNECTOR_LOG_LEVEL=error
+            - ATTRIBUTIONTOOLS_MODEL_TRAINING_CRON_UTC=0 0 * * *
+            - ATTRIBUTIONTOOLS_N_TRAINING_QUERY_THREADS=1
+            - ATTRIBUTIONTOOLS_DEFAULT_RELATION_CONFIDENCE=50
+            - ATTRIBUTIONTOOLS_AUTOMATIC_RELATION_CREATION=false
+            - ATTRIBUTIONTOOLS_RELATION_CREATION_PROBABILITY_TRESHOLD=0.95
+            - ATTRIBUTIONTOOLS_CREATOR_ORG_IDENTITY_ID=identity--b0963901-cb74-56b2-9add-92c6d1a10332
+    restart: always
+  connector-crowdsec-enrichment:
+            image: opencti/connector-crowdsec:6.4.1
+            environment:
+              - OPENCTI_URL=http://opencti:8080 # OpenCTI API URL
+              - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN} # Add OpenCTI API token here
+              - CONNECTOR_ID=11596369-e763-47a5-9a59-b436da2a4444 # Add CrowdSec connector ID (any valid UUID v4)
+              - CONNECTOR_TYPE=INTERNAL_ENRICHMENT
+              - CONNECTOR_SCOPE=IPv4-Addr,IPv6-Addr # MIME type or Stix Object
+              - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted)
+              - CONNECTOR_LOG_LEVEL=error
+              - CONNECTOR_UPDATE_EXISTING_DATA=false
+              - CONNECTOR_NAME=CrowdSec
+              - CROWDSEC_KEY=${CROWDSEC_API_KEY} # Add CrowdSec's CTI API Key
+              - CROWDSEC_API_VERSION=v2 #v2 is the only supported version for now
+            restart: always
+  connector-dnstwist-enrich:
+    image: opencti/connector-dnstwist:6.4.1
+    environment:
+      - CONNECTOR_NAME=DNS_TWISTER
+      - CONNECTOR_SCOPE=Domain-Name
+      # Connector's generic execution parameters:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=26b0cd49-41fd-408a-a1ef-f99a864c8d9e # UUID of the connector
+      - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted).
+      - CONNECTOR_LOG_LEVEL=info
+      - CONNECTOR_AUTO=true # don't run the connector automatically, you will flood your opencti instance
+      - CONNECTOR_FETCH_REGISTERED=true # takes true or false; gives the ability to control the dnstwister domain selection
+      - CONNECTOR_DNS_TWIST_THREADS=20 #number of threads to use for dnstwist; default is 20
+      - CONNECTOR_UPDATE_EXISTING_DATA=true
+      # Connector's custom execution parameters:
+    restart: always
+  connector-google-dns-enrich:
+    image: opencti/connector-google-dns:6.4.1
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=53389644-02aa-4535-958a-657e7e640f84
+      - CONNECTOR_NAME=Google DNS
+      - CONNECTOR_SCOPE=Domain-Name,Hostname # MIME type or Stix Object
+      - CONNECTOR_AUTO=false
+      - CONNECTOR_CONFIDENCE_LEVEL=100 # From 0 (Unknown) to 100 (Fully trusted)
+      - CONNECTOR_LOG_LEVEL=error
+    restart: always
+  connector-shodan-enrich:
+    image: opencti/connector-shodan:6.4.1
+    environment:
+      - OPENCTI_URL=http://opencti:8080
+      - OPENCTI_TOKEN=${OPENCTI_ADMIN_TOKEN}
+      - CONNECTOR_ID=f9ea752c-ed58-4e72-b4c3-cee9456ae89a
+      - CONNECTOR_NAME=Shodan
+      - CONNECTOR_SCOPE=IPv4-Addr,Indicator
+      - CONNECTOR_AUTO=true
+      - CONNECTOR_LOG_LEVEL=error
+      - SHODAN_TOKEN=${SHODAN_TOKEN}
+      - SHODAN_MAX_TLP=TLP:AMBER
+      - SHODAN_DEFAULT_SCORE=50
+      - SHODAN_IMPORT_SEARCH_RESULTS=true
+      - SHODAN_CREATE_NOTE=true # Add results to note rather than description
+      - SHODAN_USE_ISP_NAME_FOR_ASN=true
+    restart: always       
+networks:
+  default:
+    driver: bridge
 volumes:
   esdata:
   s3data:
